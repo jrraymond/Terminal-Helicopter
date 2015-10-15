@@ -20,6 +20,7 @@ executable flappy
   -- other-modules:       
   -- other-extensions:    
   build-depends:       base >=4.8 && <4.9
+                     , clock
                      , ncurses >= 0.2.12
                      , random
                      , transformers

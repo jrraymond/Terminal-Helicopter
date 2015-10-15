@@ -5,6 +5,7 @@ import Data.List
 import UI.NCurses
 import Data.Foldable (foldMap)
 import Data.Monoid
+import System.Clock
 import System.Environment
 import System.Random
 import System.IO.Unsafe
@@ -13,23 +14,26 @@ import System.IO.Unsafe
 data Wall = Wall Integer Integer Integer
 
 data Game =
-  Game { gBird :: Integer
+  Game { gBird :: Double
        , gDist :: Integer
        , gWd :: Integer
        , gHt :: Integer
        , gWalls :: [Wall] }
 
 getScore :: GameState -> Integer
-getScore (GameState _ (Game _ d _ _ _) _) = d
+getScore (GameState _ _ (Game _ d _ _ _) _) = d
 
 
 data GameState =
   GameState { gsPaused :: Bool
+            , gsFlapping :: Bool
             , gsState :: Game
             , gsIsAlive :: Bool }
 
+type Lag = TimeSpec
+
 initGame :: Integer -> Integer -> Game
-initGame wd ht = Game (ht `div` 2) 0 wd ht []
+initGame wd ht = Game (fromIntegral (ht `div` 2)) 0 wd ht []
 
 wall2Str :: Integer -> Wall -> String
 wall2Str ht (Wall y0 y1 wx) =
@@ -61,17 +65,17 @@ getWall rd wd ht s = Wall y0 y1 wd where
   y0 = floor (rd * fromInteger ht)
   y1 = min (ht - 1) (y0 + ht `div` 8)
 
-stepGame :: Double -> GameState -> (Integer -> Integer) -> GameState
-stepGame rd gs@(GameState True _ _) _ = gs
-stepGame rd gs@(GameState _ b@(Game y d wd ht ws) _) f
- | y' <= 0 || y' > ht = GameState False b False
- | collides y' wd ws' = GameState False b False
- | otherwise = GameState False (Game y' d' wd ht ws') True
+stepGame :: Double -> GameState -> GameState
+stepGame rd gs@(GameState True _ _ _) = gs
+stepGame rd gs@(GameState _ flapping b@(Game y d wd ht ws) _)
+ | yi' <= 0 || yi' > ht || collides yi' wd ws' = gs { gsIsAlive = False }
+ | otherwise = gs { gsState = Game y' d' wd ht ws'}
  where
     ws' = if d' `mod` 10 == 0
             then getWall rd wd ht (ht `div` 2):shiftWalls wd ws
             else shiftWalls wd ws
-    y' = f y
+    y' | flapping = y - 0.5 | otherwise = y + 0.5
+    yi' = round y'
     d' = d + 1
 
 insertInto :: Integer -> Integer -> a -> [[a]] -> [[a]]
@@ -83,7 +87,7 @@ data Input = Flap | Quit | NoOp | Pause
 
 getInput :: Integer -> Window -> Curses Input
 getInput d w = do
-  ev <- getEvent w (Just (200 ))
+  ev <- getEvent w (Just 0)
   case ev of
     Just (EventCharacter c) | c == ' ' -> return Flap
     Just (EventCharacter c) | c == 'q' -> return Quit
@@ -96,24 +100,37 @@ mainLoop wd ht w scores = do
   inp <- getInput 0 w
   case inp of
     Pause -> do
-      score <- gameLoop w (GameState False (initGame wd ht) True)
+      t0 <- liftIO $ getTime Monotonic
+      score <- gameLoop t0 w (GameState False False (initGame wd ht) True)
       mainLoop wd ht w (score:scores)
     Quit -> return scores
     _ -> mainLoop wd ht w scores
 
-gameLoop :: Window -> GameState -> Curses Integer
-gameLoop w gs@(GameState paused game alive) =
+updatePhysics :: Double -> Input -> GameState -> GameState
+updatePhysics r inp gs =
+  case inp of
+    Pause | gsPaused gs -> gs { gsPaused = False }
+    Pause               -> gs { gsPaused = True }
+    NoOp | gsPaused gs  -> gs
+    Quit                -> gs { gsIsAlive = False}
+    NoOp                -> stepGame r gs
+    Flap                -> stepGame r (gs { gsFlapping = not (gsFlapping gs) })
+
+
+gameLoop :: TimeSpec -> Window -> GameState -> Curses Integer
+gameLoop tp w gs@(GameState paused flapping game alive) =
   if not alive
     then return (getScore gs)
     else do
-      drawGame w gs
-      r <- liftIO $ getStdRandom (randomR (0,1))
+      t <- liftIO $ getTime Monotonic
+      let elapsed = t - tp
       inp <- getInput (getScore gs) w
-      case inp of
-        Pause -> gameLoop w (GameState (not paused) game True)
-        NoOp -> gameLoop w (stepGame r gs (+1))
-        Flap -> gameLoop w (stepGame r gs (\x -> x - 1))
-        Quit -> return (getScore gs)
+      r <- liftIO $ getStdRandom (randomR (0,1))
+      let gs' = updatePhysics r inp gs
+          delay = 33333.3 --(fromIntegral (nsec (tp - t)) / 10^3) --30fps
+      drawGame w gs' (show (delay / 10^3))
+      liftIO $ threadDelay (floor delay)
+      gameLoop t w gs'
 
 drawMenu :: Integer -> Integer -> Window -> [Integer] -> Curses ()
 drawMenu wd ht w gs = do
@@ -121,7 +138,7 @@ drawMenu wd ht w gs = do
     let title = "HASKY BIRD" 
     moveCursor (ht `div` 2 - 1) (wd `div` 2 - toInteger (length title) `div` 2)
     drawString title
-    let scores = "Scores: " ++ show (sort gs)
+    let scores = "Scores: " ++ show (take 10 (sortBy (flip compare) gs))
     moveCursor (ht `div` 2) (wd `div` 2 - toInteger (length scores) `div` 2)
     drawString  scores
     drawBox Nothing Nothing
@@ -136,17 +153,17 @@ drawWall :: Integer -> Integer -> Wall -> Update ()
 drawWall ht wd (Wall y0 y1 wx) =
   mapM_ (\y -> drawChar ht wd y wx '#') [y0..y1]
 
-drawGame :: Window -> GameState -> Curses ()
-drawGame w gs = do
+drawGame :: Window -> GameState -> String -> Curses ()
+drawGame w gs str = do
   let Game y d wd ht ws = gsState gs
   updateWindow w $ do
     clear
-    drawChar ht wd y (wd `div` 2) '@'
+    drawChar ht wd (round y) (wd `div` 2) '@'
     mapM_ (drawWall ht wd) ws
     drawBox Nothing Nothing
     moveCursor (ht - 1) 1
     when (gsPaused gs) $ drawString " PAUSED "
-    drawString $ "Score " ++ show d ++ " height: " ++ show y
+    drawString $ "Score " ++ show d ++ " height: " ++ show y ++ " " ++ str
   render
 
 main :: IO ()
