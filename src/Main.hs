@@ -113,8 +113,8 @@ updatePhysics r inp gs =
     Pause               -> gs { gsPaused = True }
     NoOp | gsPaused gs  -> gs
     Quit                -> gs { gsIsAlive = False}
-    NoOp                -> stepGame r gs
-    Flap                -> stepGame r (gs { gsFlapping = not (gsFlapping gs) })
+    NoOp                -> stepGame r (gs { gsFlapping = False })
+    Flap                -> stepGame r (gs { gsFlapping = True })
 
 
 gameLoop :: TimeSpec -> Window -> GameState -> Curses Integer
@@ -140,7 +140,10 @@ drawMenu wd ht w gs = do
     drawString title
     let scores = "Scores: " ++ show (take 10 (sortBy (flip compare) gs))
     moveCursor (ht `div` 2) (wd `div` 2 - toInteger (length scores) `div` 2)
-    drawString  scores
+    drawString scores
+    let info = "Hold down space to flap."
+    moveCursor (ht `div` 2 + 1) (wd `div` 2 - toInteger (length info) `div` 2)
+    drawString info
     drawBox Nothing Nothing
   render
 
