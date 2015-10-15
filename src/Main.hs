@@ -1,3 +1,4 @@
+import Control.Concurrent (threadDelay)
 import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Data.List
@@ -8,24 +9,17 @@ import System.Environment
 import System.Random
 import System.IO.Unsafe
 
-data Wall = Wall Int Int Int Int
-
-instance Show Wall where 
-  show (Wall y0 y1 y2 x) = replicate y0 ' ' ++ replicate y1 '#' ++ replicate y2 ' '
+{- A wall is the bottom, top, and horizontal position -}
+data Wall = Wall Integer Integer Integer
 
 data Game =
-  Game { gBird :: Int
-       , gDist :: Int
-       , gWd :: Int
-       , gHt :: Int
+  Game { gBird :: Integer
+       , gDist :: Integer
+       , gWd :: Integer
+       , gHt :: Integer
        , gWalls :: [Wall] }
 
-instance Show Game where
-  show (Game y d wd ht ws) = intersperse ' ' (unlines m)
-    where
-      m = insertInto y (wd `div` 2) '@' $ transpose $ fillCols ht wd ws
-
-getScore :: GameState -> Int
+getScore :: GameState -> Integer
 getScore (GameState _ (Game _ d _ _ _) _) = d
 
 
@@ -34,61 +28,72 @@ data GameState =
             , gsState :: Game
             , gsIsAlive :: Bool }
 
-initGame :: Int -> Int -> Game
+initGame :: Integer -> Integer -> Game
 initGame wd ht = Game (ht `div` 2) 0 wd ht []
 
-fillCols :: Int -> Int -> [Wall] -> [String]
+wall2Str :: Integer -> Wall -> String
+wall2Str ht (Wall y0 y1 wx) =
+  replicate top '.' ++ replicate y' '#' ++ replicate bot '.'
+  where
+    bot = fromInteger y0
+    y' = fromInteger (y1 - y0)
+    top = fromInteger (ht - y1)
+
+fillCols :: Integer -> Integer -> [Wall] -> [String]
 fillCols _ 0 _ = []
-fillCols h w [] = replicate h ' ':fillCols h (w-1) []
-fillCols h w (s@(Wall y0 y1 y2 x):ws) 
-  | x == w = show s:fillCols h (w-1) ws
-  | otherwise = replicate h ' ':fillCols h (w-1) (s:ws)
+fillCols h w [] = replicate (fromInteger h) ' ' : fillCols h (w-1) []
+fillCols h w (s@(Wall y0 y1 wx):ws) 
+  | wx == w = wall2Str h s : fillCols h (w-1) ws
+  | otherwise = replicate (fromInteger h) ' ' : fillCols h (w-1) (s:ws)
 
-collides :: Game -> Bool
-collides (Game y d wd ht ws) = getAny $ foldMap (Any . (\(Wall y0 y1 y2 wx) -> y >= y0 && y <= y0 + y1 && wd `div` 2 == wx)) ws
+collides :: Integer -> Integer -> [Wall] -> Bool
+collides y wd =
+  any (\(Wall y0 y1 wx) -> y >= y0 && y <= y1 && wd `div` 2 == wx)
 
-shiftWalls :: [Wall] -> [Wall]
-shiftWalls [] = []
-shiftWalls ((s@(Wall y0 y1 y2 x)):xs)
-  | True = Wall y0 y1 y2 (x-1):shiftWalls xs
-  | otherwise = shiftWalls xs
+shiftWalls :: Integer -> [Wall] -> [Wall]
+shiftWalls _ [] = []
+shiftWalls wd (Wall y0 y1 x:xs)
+  | x <= wd = Wall y0 y1 (x-1):shiftWalls wd xs
+  | otherwise = shiftWalls wd xs
 
-getWall :: Int -> Int -> Int -> Wall
-getWall wd ht s = Wall y0 y1 ht wd where
-  y0 = 2
-  y1 = y0+1
+getWall :: Double -> Integer -> Integer -> Integer -> Wall
+getWall rd wd ht s = Wall y0 y1 wd where
+  y0 = floor (rd * fromInteger ht)
+  y1 = min (ht - 1) (y0 + ht `div` 8)
 
-stepGame :: GameState -> (Int -> Int) -> GameState
-stepGame gs@(GameState True _ _) _ = gs
-stepGame gs@(GameState _ b@(Game y d wd ht ws) _) f
+stepGame :: Double -> GameState -> (Integer -> Integer) -> GameState
+stepGame rd gs@(GameState True _ _) _ = gs
+stepGame rd gs@(GameState _ b@(Game y d wd ht ws) _) f
  | y' <= 0 || y' > ht = GameState False b False
- | collides (Game y' d' wd ht ws') = GameState False b False
+ | collides y' wd ws' = GameState False b False
  | otherwise = GameState False (Game y' d' wd ht ws') True
  where
     ws' = if d' `mod` 10 == 0
-            then getWall wd ht (ht `div` 2):shiftWalls ws
-            else shiftWalls ws
+            then getWall rd wd ht (ht `div` 2):shiftWalls wd ws
+            else shiftWalls wd ws
     y' = f y
     d' = d + 1
 
-insertInto :: Int -> Int -> a -> [[a]] -> [[a]]
-insertInto j i v xs = take j xs ++ (take i (xs!!j) ++ v:drop (i+1) (xs!!j)):drop j xs 
+insertInto :: Integer -> Integer -> a -> [[a]] -> [[a]]
+insertInto j i v xs = take j' xs ++ (take i' (xs!!j') ++ v:drop (i'+1) (xs!!j')):drop j' xs 
+  where i' = fromIntegral i
+        j' = fromIntegral j
 
 data Input = Flap | Quit | NoOp | Pause
 
-getInput :: Window -> Curses Input
-getInput w = do
-  ev <- getEvent w (Just 0)
+getInput :: Integer -> Window -> Curses Input
+getInput d w = do
+  ev <- getEvent w (Just (200 ))
   case ev of
     Just (EventCharacter c) | c == ' ' -> return Flap
     Just (EventCharacter c) | c == 'q' -> return Quit
     Just (EventCharacter c) | c == 'p' -> return Pause
     _ -> return NoOp
 
-mainLoop :: Int -> Int -> Window -> [Int] -> Curses [Int]
+mainLoop :: Integer -> Integer -> Window -> [Integer] -> Curses [Integer]
 mainLoop wd ht w scores = do
   drawMenu wd ht w scores
-  inp <- getInput w
+  inp <- getInput 0 w
   case inp of
     Pause -> do
       score <- gameLoop w (GameState False (initGame wd ht) True)
@@ -96,37 +101,50 @@ mainLoop wd ht w scores = do
     Quit -> return scores
     _ -> mainLoop wd ht w scores
 
-gameLoop :: Window -> GameState -> Curses Int
+gameLoop :: Window -> GameState -> Curses Integer
 gameLoop w gs@(GameState paused game alive) =
   if not alive
     then return (getScore gs)
     else do
       drawGame w gs
-      inp <- getInput w
+      r <- liftIO $ getStdRandom (randomR (0,1))
+      inp <- getInput (getScore gs) w
       case inp of
         Pause -> gameLoop w (GameState (not paused) game True)
-        NoOp -> gameLoop w (stepGame gs id)
-        Flap -> gameLoop w (stepGame gs (+1))
+        NoOp -> gameLoop w (stepGame r gs (+1))
+        Flap -> gameLoop w (stepGame r gs (\x -> x - 1))
         Quit -> return (getScore gs)
 
-drawMenu :: Int -> Int -> Window -> [Int] -> Curses ()
+drawMenu :: Integer -> Integer -> Window -> [Integer] -> Curses ()
 drawMenu wd ht w gs = do
   updateWindow w $ do
-    moveCursor (toInteger (ht `div` 2)) (toInteger (wd `div` 2))
-    drawString $ "Scores: " ++ show (sort gs)
+    let title = "HASKY BIRD" 
+    moveCursor (ht `div` 2 - 1) (wd `div` 2 - toInteger (length title) `div` 2)
+    drawString title
+    let scores = "Scores: " ++ show (sort gs)
+    moveCursor (ht `div` 2) (wd `div` 2 - toInteger (length scores) `div` 2)
+    drawString  scores
+    drawBox Nothing Nothing
   render
+
+drawChar :: Integer -> Integer -> Integer -> Integer -> Char -> Update ()
+drawChar ht wd row col c
+  | row < 0 || row >= ht || col < 0 || col >= wd - 1 = return ()
+  | otherwise = moveCursor row col >> drawString [c]
+
+drawWall :: Integer -> Integer -> Wall -> Update ()
+drawWall ht wd (Wall y0 y1 wx) =
+  mapM_ (\y -> drawChar ht wd y wx '#') [y0..y1]
 
 drawGame :: Window -> GameState -> Curses ()
 drawGame w gs = do
-  let Game y d wd ht _ = gsState gs
+  let Game y d wd ht ws = gsState gs
   updateWindow w $ do
-    moveCursor 0 0
-    drawString $ show (gsState gs)
-    drawBorder (Just $ Glyph '|' []) (Just $ Glyph '|' []) 
-               (Just $ Glyph '-' []) (Just $ Glyph '-' [])
-               (Just $ Glyph '+' []) (Just $ Glyph '+' [])
-               (Just $ Glyph '+' []) (Just $ Glyph '+' [])
-    moveCursor (toInteger ht) 1
+    clear
+    drawChar ht wd y (wd `div` 2) '@'
+    mapM_ (drawWall ht wd) ws
+    drawBox Nothing Nothing
+    moveCursor (ht - 1) 1
     when (gsPaused gs) $ drawString " PAUSED "
     drawString $ "Score " ++ show d ++ " height: " ++ show y
   render
@@ -134,10 +152,11 @@ drawGame w gs = do
 main :: IO ()
 main = runCurses $ do
   args <- liftIO getArgs
-  let wd = read (head args) :: Int
-      ht = read (args !! 1) :: Int
+  let wd = read (head args) :: Integer
+      ht = read (args !! 1) :: Integer
   setEcho False
   setCursorMode CursorInvisible
-  w <- defaultWindow
+  w <- newWindow ht wd 0 0
   scores <- mainLoop wd ht w []
+  closeWindow w
   liftIO $ print (sort scores)
