@@ -31,8 +31,6 @@ data GameState =
             , gsIsAlive :: Bool
             , gsColsPerSec :: Integer }
 
-type Lag = TimeSpec
-
 initGame :: Integer -> Integer -> Game
 initGame wd ht = Game (fromIntegral (ht `div` 2)) 0 wd ht []
 
@@ -143,7 +141,7 @@ drawMenu wd ht w gs = do
     let scores = "Scores: " ++ show (take 10 (sortBy (flip compare) gs))
     moveCursor (ht `div` 2) (wd `div` 2 - toInteger (length scores) `div` 2)
     drawString scores
-    let info = "Hold down space to flap."
+    let info = "Hold down space to flap, q to quit, p to play/pause."
     moveCursor (ht `div` 2 + 1) (wd `div` 2 - toInteger (length info) `div` 2)
     drawString info
     drawBox Nothing Nothing
