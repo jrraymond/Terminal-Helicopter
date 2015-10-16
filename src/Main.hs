@@ -21,14 +21,15 @@ data Game =
        , gWalls :: [Wall] }
 
 getScore :: GameState -> Integer
-getScore (GameState _ _ (Game _ d _ _ _) _) = d
+getScore (GameState _ _ (Game _ d _ _ _) _ _) = d
 
 
 data GameState =
   GameState { gsPaused :: Bool
             , gsFlapping :: Bool
             , gsState :: Game
-            , gsIsAlive :: Bool }
+            , gsIsAlive :: Bool
+            , gsColsPerSec :: Integer }
 
 type Lag = TimeSpec
 
@@ -66,17 +67,18 @@ getWall rd wd ht s = Wall y0 y1 wd where
   y1 = min (ht - 1) (y0 + ht `div` 8)
 
 stepGame :: Double -> GameState -> GameState
-stepGame rd gs@(GameState True _ _ _) = gs
-stepGame rd gs@(GameState _ flapping b@(Game y d wd ht ws) _)
+stepGame rd gs@(GameState True _ _ _ _) = gs
+stepGame rd gs@(GameState _ flapping b@(Game y d wd ht ws) _ _)
  | yi' <= 0 || yi' > ht || collides yi' wd ws' = gs { gsIsAlive = False }
  | otherwise = gs { gsState = Game y' d' wd ht ws'}
  where
-    ws' = if d' `mod` 10 == 0
+    ws' = if d' `mod` cps == 0
             then getWall rd wd ht (ht `div` 2):shiftWalls wd ws
             else shiftWalls wd ws
     y' | flapping = y - 0.5 | otherwise = y + 0.5
     yi' = round y'
     d' = d + 1
+    cps = max 5 (10 - (d `div` 100))
 
 insertInto :: Integer -> Integer -> a -> [[a]] -> [[a]]
 insertInto j i v xs = take j' xs ++ (take i' (xs!!j') ++ v:drop (i'+1) (xs!!j')):drop j' xs 
@@ -101,7 +103,7 @@ mainLoop wd ht w scores = do
   case inp of
     Pause -> do
       t0 <- liftIO $ getTime Monotonic
-      score <- gameLoop t0 w (GameState False False (initGame wd ht) True)
+      score <- gameLoop t0 w (GameState False False (initGame wd ht) True 20)
       mainLoop wd ht w (score:scores)
     Quit -> return scores
     _ -> mainLoop wd ht w scores
@@ -118,7 +120,7 @@ updatePhysics r inp gs =
 
 
 gameLoop :: TimeSpec -> Window -> GameState -> Curses Integer
-gameLoop tp w gs@(GameState paused flapping game alive) =
+gameLoop tp w gs@(GameState paused flapping game alive cps) =
   if not alive
     then return (getScore gs)
     else do
@@ -126,7 +128,7 @@ gameLoop tp w gs@(GameState paused flapping game alive) =
       let elapsed = t - tp
       inp <- getInput (getScore gs) w
       r <- liftIO $ getStdRandom (randomR (0,1))
-      let gs' = updatePhysics r inp gs
+      let gs' = updatePhysics r inp gs { gsColsPerSec = gsColsPerSec gs + 1}
           delay = 33333.3 --(fromIntegral (nsec (tp - t)) / 10^3) --30fps
       drawGame w gs' (show (delay / 10^3))
       liftIO $ threadDelay (floor delay)
